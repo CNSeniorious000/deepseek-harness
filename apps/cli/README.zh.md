@@ -31,6 +31,24 @@ dsh --profile web --help            # the web app's flags, not the launcher's
 dsh --help                          # the launcher's own help
 ```
 
+<a id="plugin-utilities"></a>
+## 插件实用命令
+
+已安装的 profile 直接依赖可以在 package.json 中声明实用命令：
+
+```json
+{ "dsh": { "cli": { "genui": "./lib/genui.js" } } }
+```
+
+模块默认导出一个函数，接收剩余参数数组，同步或异步返回 0 至 255 的整数退出码。它负责参数解析、输出，以及在 Promise 完成前清理资源。入口文件必须存在于包内，解析符号链接后也不能越出包目录。命令沿用调用目录、环境和进程流，不会获得运行中的 profile、其服务或沙箱。Harness 应用仍通过 profile 启动。
+
+```sh
+dsh genui check example.ui4a.tsx
+dsh genui --profile web check example.ui4a.tsx
+```
+
+启动器从已初始化 profile 的直接依赖中发现命令，不导入插件入口，也不挂载 Cordis 树。选中的模块可以相对于 `import.meta.url` 定位自带 import map。已有 profile 名称、内置模板和 `plugin` 保留原有语法。存在多个提供方时，需要在命令名后立即指定 `--profile <name>`；如果所选 profile 内仍有多个提供方，则需移除冲突依赖。首个实用命令参数后的所有内容都原样转发，包括 `--help` 和后置的 `--profile` 参数。提供方缺失或声明无效时，以非零状态失败，且不创建 profile。已安装命令独立于组合包的运行时启用状态。选中包必须满足运行时的 DSH 兼容性要求，或具有精确版本豁免。Desktop 持有的安装仅由 Desktop 内置启动器发现。
+
 <a id="profiles"></a>
 ## Profile
 

@@ -36,6 +36,8 @@ export interface DshManifest {
   profile?: DshProfileManifest
   /** Client module loading and build metadata. */
   client?: DshClientManifest
+  /** CLI utility names mapped to package-relative modules default-exporting an argv-to-exit-status function. */
+  cli?: Record<string, string>
 }
 
 /** Literal text or translations indexed by lowercase language id, with a required English fallback. */

@@ -31,6 +31,24 @@ dsh --profile web --help            # the web app's flags, not the launcher's
 dsh --help                          # the launcher's own help
 ```
 
+<a id="plugin-utilities"></a>
+## Plugin utilities
+
+An installed profile dependency may declare utility commands in its package.json:
+
+```json
+{ "dsh": { "cli": { "genui": "./lib/genui.js" } } }
+```
+
+The module default-exports a function accepting the remaining argument array and returning an integer exit status from 0 through 255, synchronously or asynchronously. It owns argument parsing, output, and cleanup before its promise settles. The entry must exist inside the package, including after symlink resolution. Utilities run with the invoking directory, environment, and process streams; they do not receive a running profile, its services, or its sandbox. Harness applications still launch through profiles.
+
+```sh
+dsh genui check example.ui4a.tsx
+dsh genui --profile web check example.ui4a.tsx
+```
+
+The launcher discovers commands from direct dependencies of initialized profiles without importing their plugin entries or mounting a Cordis tree. The selected module can locate its own import maps relative to `import.meta.url`. Existing profile names, shipped templates, and `plugin` keep their existing grammar. Multiple providers require `--profile <name>` immediately after the utility name; if that profile itself contains competing providers, remove the conflicting dependency. Everything after the first utility argument is forwarded unchanged, including `--help` and later `--profile` arguments. Missing providers and invalid declarations fail nonzero without creating a profile. Installed utilities remain callable independently of their bundle's runtime activation. The selected package must satisfy the runtime's DSH compatibility requirements or hold an exact-version exemption. Desktop-owned installations are discoverable only through Desktop's bundled launcher.
+
 <a id="profiles"></a>
 ## Profiles
 

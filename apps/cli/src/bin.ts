@@ -26,7 +26,24 @@ export type RunCliOptions = Pick<RunProfileOptions, 'packageManager'> & {
 export async function runCli(options: RunCliOptions = {}): Promise<void> {
   const version = getDshRuntimeVersion()
   const { manageDesktopProfile, ...profileOptions } = options
-  const invocation = parseDshArgs(process.argv.slice(2), version, manageDesktopProfile)
+  const args = process.argv.slice(2)
+  if (args[0] !== undefined && !args[0].startsWith('-') && args[0] !== 'plugin') {
+    const { resolveCliCommand, runCliCommand } = await import('./cli-command.ts')
+    try {
+      const command = resolveCliCommand(args, {
+        home: resolveDshHome(), runtimeVersion: version, manageDesktopProfile: manageDesktopProfile === true,
+      })
+      if (command !== undefined) {
+        process.exitCode = await runCliCommand(command)
+        return
+      }
+    } catch (error) {
+      process.stderr.write(`dsh: ${String(error)}\n`)
+      process.exitCode = 1
+      return
+    }
+  }
+  const invocation = parseDshArgs(args, version, manageDesktopProfile)
 
   switch (invocation.mode) {
     case 'profile': {

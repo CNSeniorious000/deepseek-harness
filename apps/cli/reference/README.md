@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-This reference defines the profile, plugin-management, and config-dump command modes. Argv is parsed once through [`src/args.ts`](../src/args.ts), and [`src/bin.ts`](../src/bin.ts) dynamically imports only the selected runner.
+This reference defines the profile, plugin-management, and config-dump command modes. [Installed plugin utilities](../README.md#plugin-utilities) are discovered before profile parsing; otherwise [`src/args.ts`](../src/args.ts) parses argv, and [`src/bin.ts`](../src/bin.ts) dynamically imports only the selected runner.
 
 The [generated command help](../../../docs/cli-help.md) contains complete launcher, plugin-management, and shipped-profile help. Run `pnpm run gen-cli-help` to refresh it; `pnpm run verify-cli-help` checks it against the current CLI.
 
