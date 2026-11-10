@@ -21,6 +21,8 @@ const MAX_DEPTH = 256
 interface ToolState {
   /** Absent until a named delta or `tool/call` identifies the call. */
   readonly root: ToolCallBlock | undefined
+  /** First root preparation or call position, independent of earlier child dispatches. */
+  readonly anchorSeq?: number
   readonly children: ReadonlyMap<string, readonly ToolCallBlock[]>
   readonly parents: ReadonlyMap<string, string>
 }
@@ -76,6 +78,7 @@ function applyDelta(state: ToolState, match: ConversationMatch): ToolState {
     args.append(chunk.argumentsDelta)
     return {
       ...state,
+      anchorSeq: match.event.seq,
       root: {
         phase: 'preparing',
         callId: String(chunk.id), name: chunk.name,
@@ -308,18 +311,22 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
     if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
       const rootCallId: unknown = event.data.rootCallId
       return typeof rootCallId === 'string' && rootCallId !== ''
-        ? { id: rootCallId, role: 'update' }
+        ? { id: rootCallId, role: 'start' }
         : null
     }
     return null
   },
   start: (_context, match) => {
     const state: ToolState = { root: undefined, children: new Map(), parents: new Map() }
-    return match.event.type === 'tool/call' ? { ...state, root: rootCall(match) } : applyDelta(state, match)
+    if (match.event.type === 'tool/call') return { ...state, root: rootCall(match), anchorSeq: match.event.seq }
+    // Streaming execution can dispatch children before the root call is committed.
+    return match.event.type === 'assistant/live-chunk' ? applyDelta(state, match) : updateDispatch(state, match)
   },
   update: (context, match) => {
     if (match.event.type === 'assistant/live-chunk') return applyDelta(context.state, match)
-    if (match.event.type === 'tool/call') return { ...context.state, root: rootCall(match, context.state.root) }
+    if (match.event.type === 'tool/call') {
+      return { ...context.state, root: rootCall(match, context.state.root), anchorSeq: context.state.anchorSeq ?? match.event.seq }
+    }
     if (match.event.type === 'tool/result') {
       const root = context.state.root
       const running = root !== undefined && !('kind' in root) && root.phase === 'start' ? root : undefined
@@ -340,7 +347,8 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
       ? preparingBlock(state.root, current?.data.root)
       : state.root
     const projected = projectBlock(root, state, interruptedAt)
-    const anchor = context.start?.event.seq
+    const anchor = state.anchorSeq
+      ?? context.start?.event.seq
       ?? ('kind' in state.root ? state.root.seq : context.matches[0]?.event.seq ?? 0)
     const preparing = !('kind' in projected) && projected.phase === 'preparing'
     const visibility = preparing && interruptedAt !== undefined ? 'hidden' : 'visible'

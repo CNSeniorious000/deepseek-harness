@@ -658,6 +658,44 @@ describe('Trajectory conversation Definitions', () => {
     }])
   })
 
+  it.each([0, 2, 4])('retains nested calls when %i dispatch events precede the root call', (beforeRoot) => {
+    const children = ['read-one', 'read-two']
+    const dispatches = children.flatMap(subCallId => [
+      at(0, 'tool/ptc-dispatch-start', {
+        rootCallId: 'root', parentCallId: 'root', subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+      }),
+      at(0, 'tool/ptc-dispatch', {
+        rootCallId: 'root', parentCallId: 'root', subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+        content: [{ type: 'text', text: 'contents' }], isError: false,
+      }),
+    ])
+    const call = at(0, 'tool/call', { turn: 1, step: 1, callId: 'root', name: 'run_code', arguments: '{"code":"read()"}' })
+    const events = [...dispatches.slice(0, beforeRoot), call, ...dispatches.slice(beforeRoot)]
+      .map(({ event }, index) => at(index + 3, event.type, event.data))
+    const history = [
+      at(1, 'turn/start', { turn: 1 }), at(2, 'step/start', { turn: 1, step: 1 }), ...events,
+      at(8, 'tool/result', { turn: 1, step: 1, message: {
+        id: 'result-root', role: 'tool', toolCallId: 'root', source: { kind: 'tool', callId: 'root' }, content: [], isError: false,
+      } }, { surfaceOp: 'append' }),
+      at(9, 'step/end', { turn: 1, step: 1 }),
+    ]
+    const replay = snapshot(assembler(history))
+    const live = assembler(history.slice(0, 2))
+    for (const event of history.slice(2)) live.append(event)
+    live.flush()
+    const paged = assembler(history.slice(-2), true)
+    paged.prepend(history.slice(0, -2), false)
+    paged.flush()
+    const roots = replay.eventNodes.filter(node => node.kind === 'tool-result')
+    expect(roots).toHaveLength(1)
+    expect(roots[0]).toMatchObject({
+      name: 'run_code', call: { name: 'run_code', argsRaw: '{"code":"read()"}' }, isError: false,
+      subCalls: children.map(callId => ({ kind: 'tool-result', callId, parentCallId: 'root', name: 'read', isError: false })),
+    })
+    expect(snapshot(live).eventNodes).toEqual(replay.eventNodes)
+    expect(snapshot(paged).eventNodes).toEqual(replay.eventNodes)
+  })
+
   it('keeps parallel roots, raw Tool facts, and mixed-ID PTC dispatch results', () => {
     const error = {
       name: 'AutoReviewDeniedError',
