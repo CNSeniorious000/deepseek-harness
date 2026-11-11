@@ -2,6 +2,7 @@
 - button "Bash Echo CODE_ROUND_OK"
 - text: Failed
 - 'button "Read Error: cannot read \"{{cwd}}/missing.txt\": not found"'
+- 'button "Failed Bash Error: the user rejected tool \"bash\""'
 - button "Bash Echo CODE_ROUND_OK"
 - text: Failed
 - 'button "Read Error: cannot read \"{{cwd}}/workspace/missing.txt\": not found"'

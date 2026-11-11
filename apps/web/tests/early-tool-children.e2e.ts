@@ -8,6 +8,7 @@ import { describe, expect, it, onTestFailed, onTestFinished } from 'vitest'
 import { deriveReplayScript } from '@deepseek-ai/dsh-llm-replay'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import {
   acknowledgeReloadConnectionLoss, assertFixtureInventory, captureStableAria, compareOrRefreshGolden, fixtureUserPrompts,
   launchWebScaffold, parseSeedFixture, readPersistedEvents, realizeSeedFixture, selectedSessionFixture, watchConsole,
@@ -23,12 +24,17 @@ describe.skipIf(MODE === 'record')('web e2e: recorded children before their pare
   it.each(['complete', 'stop'] as const)('retains child inspection and history when the stream will %s', async (outcome) => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-early-tool-children-'))
     const release = Promise.withResolvers<undefined>()
+    const continuation = Promise.withResolvers<undefined>()
+    const approvalAbort = new AbortController()
     const ready = Promise.withResolvers<Session>()
-    const owned: { scaffold?: WebScaffold; browser?: Browser; dispose?: () => void } = {}
+    const owned: { scaffold?: WebScaffold; browser?: Browser; dispose?: () => void; approval?: Promise<ApprovalOutcome> } = {}
     onTestFinished(async () => {
-      release.resolve(undefined)
-      owned.dispose?.()
       const failures: unknown[] = []
+      approvalAbort.abort()
+      await owned.approval?.catch((error: unknown) => failures.push(error))
+      release.resolve(undefined)
+      continuation.resolve(undefined)
+      owned.dispose?.()
       await owned.browser?.close().catch((error: unknown) => failures.push(error))
       await owned.scaffold?.close().catch((error: unknown) => failures.push(error))
       await rm(directory, { recursive: true, force: true }).catch((error: unknown) => failures.push(error))
@@ -59,9 +65,13 @@ describe.skipIf(MODE === 'record')('web e2e: recorded children before their pare
     let held = false
     // Deliver recorded child facts before the parent call, with separate ids from its later native dispatches.
     owned.dispose = scaffold.ctx.on('llm/stream', async function* (options, next) {
+      // Keep the approval audit pair inside its turn while the parent has already arrived.
+      if (held) await continuation.promise
       for await (const chunk of next()) {
-        yield chunk
-        if (held || chunk.type !== 'tool-call-delta' || chunk.id !== first.rootCallId) continue
+        if (held || chunk.type !== 'tool-call-delta' || chunk.id !== first.rootCallId) {
+          yield chunk
+          continue
+        }
         held = true
         if (active === undefined) throw new Error('stream has no active Session')
         active.append('tool/ptc-dispatch-start', first)
@@ -76,6 +86,8 @@ describe.skipIf(MODE === 'record')('web e2e: recorded children before their pare
         } finally {
           options.signal?.removeEventListener('abort', onAbort)
         }
+        if (options.signal?.aborted) return
+        yield chunk
       }
     }, { prepend: true })
     const browser = owned.browser = await chromium.launch()
@@ -106,8 +118,30 @@ describe.skipIf(MODE === 'record')('web e2e: recorded children before their pare
     await page.getByRole('tab', { name: 'Result', exact: true }).click()
     await page.getByRole('region', { name: 'Rendered result', exact: true }).getByText('CODE_ROUND_OK', { exact: true }).waitFor()
     if (outcome === 'complete') {
+      const approvalChild = { ...first, subCallId: ToolCallId(`${first.subCallId}:approval`) }
+      session.append('tool/ptc-dispatch-start', approvalChild)
+      const agent = scaffold.ctx.agents.get(session.id)
+      if (agent === undefined) throw new Error('approval requires the active agent')
+      owned.approval = scaffold.ctx.approval.request({
+        agent, toolName: 'bash', callId: approvalChild.subCallId, signal: approvalAbort.signal,
+      })
+      const approval = page.locator('[data-approval-key]')
+      await approval.getByText('echo CODE_ROUND_OK', { exact: true }).waitFor()
+      const approvalKey = await approval.getAttribute('data-approval-key')
+      const approvalAria = await captureStableAria(page, '[data-approval-key]', scaffold.workspaceCwd)
       session.append('tool/ptc-dispatch', { ...failed.data, subCallId: second.subCallId })
       release.resolve(undefined)
+      await expect.poll(() => selected.getAttribute('data-kind')).toBe('subtool')
+      expect(await approval.getAttribute('data-approval-key')).toBe(approvalKey)
+      await expect.poll(() => approval.textContent()).toContain('echo CODE_ROUND_OK')
+      expect(await captureStableAria(page, '[data-approval-key]', scaffold.workspaceCwd)).toBe(approvalAria)
+      await compareOrRefreshGolden(join(DIRECTORY, 'approval.expected.md'), approvalAria, MODE)
+      await approval.getByRole('button', { name: 'Reject', exact: true }).click()
+      expect(await owned.approval).toBe('rejected')
+      session.append('tool/ptc-dispatch', {
+        ...approvalChild, isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "bash"' }],
+      })
+      continuation.resolve(undefined)
     }
     else await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
     const sessionId = await settled
@@ -139,6 +173,6 @@ describe.skipIf(MODE === 'record')('web e2e: recorded children before their pare
   })
 
   it('keeps the borrowed recording and output inventory explicit', async () => {
-    await assertFixtureInventory(DIRECTORY, ['complete.expected.md', 'stop.expected.md'])
+    await assertFixtureInventory(DIRECTORY, ['complete.expected.md', 'stop.expected.md', 'approval.expected.md'])
   })
 })
