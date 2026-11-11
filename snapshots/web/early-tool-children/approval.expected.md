@@ -1,0 +1,4 @@
+- text: Waiting for approval
+- group "Approval details": Tool bash requests privileged execution echo CODE_ROUND_OK
+- button "Reject"
+- button "Allow once"

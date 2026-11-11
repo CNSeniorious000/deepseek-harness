@@ -21,6 +21,8 @@ const MAX_DEPTH = 256
 interface ToolState {
   /** Absent until a named delta or `tool/call` identifies the call. */
   readonly root: ToolCallBlock | undefined
+  /** First root preparation or call position, independent of earlier child dispatches. */
+  readonly anchorSeq?: number
   readonly children: ReadonlyMap<string, readonly ToolCallBlock[]>
   readonly parents: ReadonlyMap<string, string>
 }
@@ -76,6 +78,7 @@ function applyDelta(state: ToolState, match: ConversationMatch): ToolState {
     args.append(chunk.argumentsDelta)
     return {
       ...state,
+      anchorSeq: match.event.seq,
       root: {
         phase: 'preparing',
         callId: String(chunk.id), name: chunk.name,
@@ -230,7 +233,6 @@ function projectBlock(
   visited = new Set<string>(),
   depth = 1,
 ): ToolCallBlock {
-  if (!('kind' in block) && block.phase === 'preparing') return block
   if (visited.has(block.callId) || depth > MAX_DEPTH) return { ...block, subCalls: [] }
   const nextVisited = new Set(visited)
   nextVisited.add(block.callId)
@@ -245,7 +247,8 @@ function projectBlock(
     && sameReferences(cached.children, children)) {
     return cached.value
   }
-  const projected: ToolCallBlock = 'kind' in block || interruptedAt === undefined
+  // A child may execute during preparation without a committed root call to mark interrupted.
+  const projected: ToolCallBlock = 'kind' in block || interruptedAt === undefined || block.phase === 'preparing'
     ? sameReferences(block.subCalls, children) ? block : { ...block, subCalls: children }
     : {
       kind: 'tool-result',
@@ -308,18 +311,22 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
     if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
       const rootCallId: unknown = event.data.rootCallId
       return typeof rootCallId === 'string' && rootCallId !== ''
-        ? { id: rootCallId, role: 'update' }
+        ? { id: rootCallId, role: 'start' }
         : null
     }
     return null
   },
   start: (_context, match) => {
     const state: ToolState = { root: undefined, children: new Map(), parents: new Map() }
-    return match.event.type === 'tool/call' ? { ...state, root: rootCall(match) } : applyDelta(state, match)
+    if (match.event.type === 'tool/call') return { ...state, root: rootCall(match), anchorSeq: match.event.seq }
+    // Streaming execution can dispatch children before the root call is committed.
+    return match.event.type === 'assistant/live-chunk' ? applyDelta(state, match) : updateDispatch(state, match)
   },
   update: (context, match) => {
     if (match.event.type === 'assistant/live-chunk') return applyDelta(context.state, match)
-    if (match.event.type === 'tool/call') return { ...context.state, root: rootCall(match, context.state.root) }
+    if (match.event.type === 'tool/call') {
+      return { ...context.state, root: rootCall(match, context.state.root), anchorSeq: context.state.anchorSeq ?? match.event.seq }
+    }
     if (match.event.type === 'tool/result') {
       const root = context.state.root
       const running = root !== undefined && !('kind' in root) && root.phase === 'start' ? root : undefined
@@ -332,23 +339,29 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
   buildViewNode: (context) => {
     const current = context.current.get('chat') as ChatNode<'tool-call'> | null | undefined
     const state = context.state ?? fallbackState(context)
-    if (state?.root === undefined) {
+    const interruptedAt = interruption(context)
+    const root = state?.root
+    const missingRoot = root === undefined || (!('kind' in root) && root.phase === 'preparing' && interruptedAt !== undefined)
+    const trees = state === undefined ? [] : [
+      ...missingRoot ? [] : [projectBlock(!('kind' in root) && root.phase === 'preparing'
+        ? preparingBlock(root, current?.data.root) : root, state, interruptedAt)],
+      ...[...state.children].flatMap(([parent, children]) => state.parents.has(parent) || (!missingRoot && parent === context.id) ? []
+        : children.map(child => projectBlock(child, state, interruptedAt))),
+    ]
+    const projected = trees[0]
+    if (projected === undefined) {
       return current == null ? null : current.visibility === 'hidden' ? current : { ...current, visibility: 'hidden' }
     }
-    const interruptedAt = interruption(context)
-    const root = !('kind' in state.root) && state.root.phase === 'preparing'
-      ? preparingBlock(state.root, current?.data.root)
-      : state.root
-    const projected = projectBlock(root, state, interruptedAt)
-    const anchor = context.start?.event.seq
-      ?? ('kind' in state.root ? state.root.seq : context.matches[0]?.event.seq ?? 0)
-    const preparing = !('kind' in projected) && projected.phase === 'preparing'
-    const visibility = preparing && interruptedAt !== undefined ? 'hidden' : 'visible'
+    const anchor = (missingRoot ? undefined : state?.anchorSeq)
+      ?? context.start?.event.seq
+      ?? ('kind' in projected ? projected.seq : context.matches[0]?.event.seq ?? 0)
+    const siblings = trees.slice(1)
     const location = contextLocation(context)
-    const data = current?.data.root === projected ? current.data : { root: projected } satisfies ToolChatData
+    const data = current?.data.root === projected && sameReferences(current.data.siblings ?? [], siblings)
+      ? current.data : { root: projected, ...siblings.length === 0 ? {} : { siblings } } satisfies ToolChatData
     if (current?.data === data && current.anchorSeq === anchor
-      && current.visibility === visibility && current.location === location) return current
-    return chatNode(context, 'tool-call', anchor, data, { visibility, location })
+      && current.visibility === 'visible' && current.location === location) return current
+    return chatNode(context, 'tool-call', anchor, data, { location })
   },
 }
 

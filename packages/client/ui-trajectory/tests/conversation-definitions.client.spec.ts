@@ -658,6 +658,98 @@ describe('Trajectory conversation Definitions', () => {
     }])
   })
 
+  it('publishes early children for inspection and retains their owning step after interruption', () => {
+    const data = { rootCallId: 'root', parentCallId: 'root', subCallId: 'first', name: 'read', arguments: { path: 'a.txt' } }
+    const history = [
+      at(1, 'turn/start', { turn: 2 }), at(2, 'step/start', { turn: 2, step: 3 }),
+      at(3, 'tool/ptc-dispatch-start', data),
+      at(4, 'tool/ptc-dispatch', { ...data, content: [{ type: 'text', text: 'done' }], isError: false }),
+      at(5, 'tool/ptc-dispatch-start', { ...data, subCallId: 'second' }),
+    ]
+    const live = assembler(history)
+    const before = snapshot(live)
+    expect(before.eventNodes).toMatchObject([{ kind: 'tool-result', callId: 'first', seq: 4, callTime: 1_700_000_000_003 }])
+    expect(before.runningCalls).toMatchObject([{ callId: 'second', parentCallId: 'root', turn: 2, step: 3 }])
+    const layout = deriveTrajectoryLayout({ ...before, nodes: before.eventNodes }, t)
+    expect(layout).toMatchObject([{ turn: 2, groups: [{ title: 'Step 3', cells: [{ callId: 'first' }, { callId: 'second' }] }] }])
+    const closed = at(6, 'step/end', { turn: 2, step: 3 })
+    live.append(closed)
+    live.flush()
+    const after = snapshot(live)
+    expect(after.runningCalls).toEqual([])
+    expect(after.eventNodes).toMatchObject([
+      { callId: 'first', parentCallId: 'root', isError: false },
+      { callId: 'second', parentCallId: 'root', error: { code: 'interrupted' } },
+    ])
+    const interrupted = deriveTrajectoryLayout({ ...after, nodes: after.eventNodes }, t)
+    expect(interrupted).toMatchObject([{ turn: 2, groups: [{ title: 'Step 3' }] }])
+    expect(interrupted[0]?.groups[0]?.cells.filter(cell => cell.kind === 'tool').map(cell => cell.callId)).toEqual(['first', 'second'])
+    const replay = snapshot(assembler([...history, closed]))
+    expect(after.eventNodes).toEqual(replay.eventNodes)
+    expect(after.runningCalls).toEqual(replay.runningCalls)
+    expect(deriveTrajectoryLayout({ ...replay, nodes: replay.eventNodes }, t)).toEqual(interrupted)
+    const started = assembler(history)
+    started.append(at(6, 'tool/call', { turn: 2, step: 3, callId: 'root', name: 'python', arguments: '{}' }))
+    started.flush()
+    expect(snapshot(started).eventNodes).toEqual([])
+    expect(snapshot(started).runningCalls).toMatchObject([{ callId: 'root', subCalls: [{ callId: 'first' }, { callId: 'second' }] }])
+  })
+
+  it('shows a child whose intermediate parent is outside the loaded window', () => {
+    const history = [
+      at(1, 'turn/start', { turn: 2 }), at(2, 'step/start', { turn: 2, step: 3 }),
+      at(3, 'tool/ptc-dispatch-start', { rootCallId: 'root', parentCallId: 'root', subCallId: 'parent', name: 'run_code', arguments: {} }),
+      at(4, 'tool/ptc-dispatch', {
+        rootCallId: 'root', parentCallId: 'parent', subCallId: 'child', name: 'read', arguments: {}, content: [], isError: false,
+      }),
+    ]
+    const paged = assembler(history.slice(-1), true)
+    expect(snapshot(paged).eventNodes).toMatchObject([{ callId: 'child', parentCallId: 'parent' }])
+    paged.prepend(history.slice(0, -1), false)
+    paged.flush()
+    expect(snapshot(paged)).toEqual(snapshot(assembler(history)))
+    expect(snapshot(paged).eventNodes).toEqual([])
+    expect(snapshot(paged).runningCalls).toMatchObject([{ callId: 'parent', subCalls: [{ callId: 'child' }] }])
+  })
+
+  it.each([0, 2, 4])('retains nested calls when %i dispatch events precede the root call', (beforeRoot) => {
+    const children = ['read-one', 'read-two']
+    const dispatches = children.flatMap(subCallId => [
+      at(0, 'tool/ptc-dispatch-start', {
+        rootCallId: 'root', parentCallId: 'root', subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+      }),
+      at(0, 'tool/ptc-dispatch', {
+        rootCallId: 'root', parentCallId: 'root', subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+        content: [{ type: 'text', text: 'contents' }], isError: false,
+      }),
+    ])
+    const call = at(0, 'tool/call', { turn: 1, step: 1, callId: 'root', name: 'run_code', arguments: '{"code":"read()"}' })
+    const events = [...dispatches.slice(0, beforeRoot), call, ...dispatches.slice(beforeRoot)]
+      .map(({ event }, index) => at(index + 3, event.type, event.data))
+    const history = [
+      at(1, 'turn/start', { turn: 1 }), at(2, 'step/start', { turn: 1, step: 1 }), ...events,
+      at(8, 'tool/result', { turn: 1, step: 1, message: {
+        id: 'result-root', role: 'tool', toolCallId: 'root', source: { kind: 'tool', callId: 'root' }, content: [], isError: false,
+      } }, { surfaceOp: 'append' }),
+      at(9, 'step/end', { turn: 1, step: 1 }),
+    ]
+    const replay = snapshot(assembler(history))
+    const live = assembler(history.slice(0, 2))
+    for (const event of history.slice(2)) live.append(event)
+    live.flush()
+    const paged = assembler(history.slice(-2), true)
+    paged.prepend(history.slice(0, -2), false)
+    paged.flush()
+    const roots = replay.eventNodes.filter(node => node.kind === 'tool-result')
+    expect(roots).toHaveLength(1)
+    expect(roots[0]).toMatchObject({
+      name: 'run_code', call: { name: 'run_code', argsRaw: '{"code":"read()"}' }, isError: false,
+      subCalls: children.map(callId => ({ kind: 'tool-result', callId, parentCallId: 'root', name: 'read', isError: false })),
+    })
+    expect(snapshot(live).eventNodes).toEqual(replay.eventNodes)
+    expect(snapshot(paged).eventNodes).toEqual(replay.eventNodes)
+  })
+
   it('keeps parallel roots, raw Tool facts, and mixed-ID PTC dispatch results', () => {
     const error = {
       name: 'AutoReviewDeniedError',

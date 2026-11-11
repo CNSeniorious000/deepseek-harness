@@ -2334,7 +2334,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.trajectory.images\', () => ctx.slots.register(\n      { name: \'conversation.trajectory.images\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-trajectory/src/client/trajectory-contract.ts:103',
+    source: 'packages/client/ui-trajectory/src/client/trajectory-contract.ts:104',
   },
   {
     key: 'conversation.user.text.node',

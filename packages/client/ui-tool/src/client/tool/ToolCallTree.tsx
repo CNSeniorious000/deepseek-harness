@@ -81,7 +81,7 @@ const ToolCallBranch = memo(function ToolCallBranch({
       useDisclosure={useDisclosure}
       loadImage={loadImage}
     >
-      {call.phase !== 'preparing' && call.block.subCalls.length > 0 ? (
+      {call.block.subCalls.length > 0 ? (
         <div className={css.subCalls} data-subcalls>
           {call.block.subCalls.map(child => (
             <ToolCallBranch
@@ -120,9 +120,10 @@ export function ToolCallTree({
     <GenericToolCard {...owner} t={t} getFileTriggerProps={getFileTriggerProps} />, [t, getFileTriggerProps])
   const home = useHostInfo(info => info.home)
   return (
-    <ToolCallBranch
+    <>{[node.data.root, ...node.data.siblings ?? []].map(block => <ToolCallBranch
+      key={block.callId}
       renderSlot={renderSlot}
-      block={node.data.root}
+      block={block}
       cwd={cwd}
       home={home}
       openFile={openFile}
@@ -130,6 +131,6 @@ export function ToolCallTree({
       inspectCall={inspectCall}
       useDisclosure={useDisclosure}
       loadImage={loadImage}
-    />
+    />)}</>
   )
 }

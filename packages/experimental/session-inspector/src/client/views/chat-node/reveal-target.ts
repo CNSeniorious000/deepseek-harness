@@ -1,7 +1,7 @@
 /** Precise and nearby Chat reveal candidates from the Inspector's loaded Chat snapshot. */
 
 import type { InspectorChatTarget } from '../objects.ts'
-import type { ChatConversationViewNode, ToolChatData } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 
 function nearest(nodes: readonly ChatConversationViewNode[], seq: number): ChatConversationViewNode | undefined {
   let best: ChatConversationViewNode | undefined
@@ -19,7 +19,7 @@ function primaryTarget(target: InspectorChatTarget, visible: readonly ChatConver
     : inTurn.filter(node => node.location.kind === 'step' && node.location.step.step === target.step)
   const rootCallId = target.rootCallId ?? target.callId
   const tool = rootCallId === undefined ? undefined
-    : visible.find(node => node.kind === 'tool-call' && (node.data as ToolChatData).root.callId === rootCallId)
+    : visible.find(node => node.kind === 'tool-call' && node.id === rootCallId)
   const exact = inStep.find(node => node.anchorSeq === target.anchorSeq)
   const kind = target.nodeKind === undefined ? undefined : inStep.find(node => node.kind === target.nodeKind)
   const node = tool ?? exact ?? kind ?? nearest(inStep, target.anchorSeq) ?? nearest(inTurn, target.anchorSeq)

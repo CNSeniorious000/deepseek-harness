@@ -1,0 +1,9 @@
+version: 1
+scenario: early-tool-children
+profile: web
+composition: web-ptc
+recording: authored
+header:
+  class: web-ptc
+session:
+  source: ../ptc-round/session.v4.jsonl

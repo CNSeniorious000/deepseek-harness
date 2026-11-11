@@ -157,7 +157,10 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
     for (const child of tool.subCalls) visit(child)
   }
   for (const node of nodes) {
-    if (node.kind === 'tool-call') visit(node.data.root)
+    if (node.kind === 'tool-call') {
+      visit(node.data.root)
+      for (const sibling of node.data.siblings ?? []) visit(sibling)
+    }
   }
   if (running === undefined) runningDetail = liveReasoningDetail(nodes)
   if (nodes.length > 0 && nodes.every(node => node.kind === 'context')) counts.set('context', nodes.length)

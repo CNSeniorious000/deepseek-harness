@@ -31,8 +31,14 @@ export function commandOf(call: ApprovalToolCall | undefined): string | undefine
 export function ApprovalCommand({ callId, useChat }: PropsRuntime<'conversation.approval.detail'>) {
   const command = useChat((snapshot) => {
     for (const node of snapshot.nodes.values()) {
-      const root = node.kind === 'tool-call' ? (node as ChatNode<'tool-call'>).data.root : undefined
-      if (root !== undefined && root.callId === callId && !('kind' in root) && root.phase === 'start') return commandOf(root)
+      if (node.kind !== 'tool-call') continue
+      const { root, siblings = [] } = (node as ChatNode<'tool-call'>).data
+      const calls = [root, ...siblings]
+      for (const call of calls) {
+        if (call.callId === callId && !('kind' in call) && call.phase === 'start') return commandOf(call)
+        // Parent arrival moves a pending child's command from the forest into its tree.
+        calls.push(...call.subCalls)
+      }
     }
     return undefined
   })

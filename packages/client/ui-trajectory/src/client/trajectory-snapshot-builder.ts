@@ -251,10 +251,14 @@ export class TrajectorySnapshotBuilder implements ConversationViewBuilder<
         continue
       }
       if (data.kind === 'tool') {
-        if ('kind' in data.root) finalized.push(data.root)
-        else runningCalls.push(data.root)
-        if (previousHeader !== undefined && previousHeader.seq < contribution.anchorSeq) {
-          captureSchemas(data.root, previousTools, callSchemas)
+        for (const root of [data.root, ...data.siblings ?? []]) {
+          if ('kind' in root) {
+            finalized.push(root)
+            eventLocations.set(root.seq, contribution.location)
+          } else runningCalls.push(root)
+          if (previousHeader !== undefined && previousHeader.seq < contribution.anchorSeq) {
+            captureSchemas(root, previousTools, callSchemas)
+          }
         }
         continue
       }

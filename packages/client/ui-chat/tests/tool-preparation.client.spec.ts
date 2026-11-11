@@ -10,6 +10,8 @@ import { assistantDefinition } from '../src/client/conversation-nodes/assistant.
 import { toolDefinition } from '../src/client/conversation-nodes/tool.ts'
 import { chatViewDefinition } from '../src/client/conversation-nodes/chat-snapshot-builder.ts'
 import { processGroupDefinition } from '../src/client/conversation-nodes/process-groups.ts'
+import { processEvidenceDefinition, turnProcessDefinition } from '../src/client/conversation-nodes/turn-process.ts'
+import { turnTailDefinition } from '../src/client/conversation-nodes/turn-tail.ts'
 
 const attemptId = LlmAttemptId('preparing-test')
 const first = ToolCallId('write-one')
@@ -81,9 +83,11 @@ function harness(
   hasMore = false,
   tool = toolDefinition,
   assistant = assistantDefinition,
+  process = false,
 ) {
+  const processDefinitions = process ? [processEvidenceDefinition, turnProcessDefinition, turnTailDefinition] : []
   const assembler = new ConversationNodeAssembler(
-    { entries: () => [assistant, tool], fallbackEntry: () => undefined },
+    { entries: () => [assistant, tool, ...processDefinitions], fallbackEntry: () => undefined },
     { entries: () => [chatViewDefinition] },
     { entries: () => [processGroupDefinition], forTarget: target => target === 'chat' ? processGroupDefinition : undefined },
   )
@@ -101,6 +105,154 @@ function harness(
 }
 
 describe('Tool preparation and durable replay', () => {
+  it('retains a child with an unloaded parent and joins later ancestors without duplication', () => {
+    const third = ToolCallId('read-three')
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: {} }
+    const history = [
+      ...opening,
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data }),
+      entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4,
+        data: { ...data, parentCallId: second, subCallId: third, content: [], isError: false } }),
+    ]
+    const paged = harness(history.slice(-1), true)
+    expect(paged.tools()[0]?.data).toMatchObject({ root: { callId: third, parentCallId: second } })
+    paged.assembler.prepend(history.slice(0, -1), false)
+    expect(paged.material()).toEqual(harness(history).material())
+    expect(paged.tools()[0]?.data).toMatchObject({ root: { callId: second, subCalls: [{ callId: third }] } })
+    paged.assembler.append(call(5))
+    expect(paged.tools()).toHaveLength(1)
+    expect(paged.tools()[0]?.data).toMatchObject({
+      root: { callId: first, subCalls: [{ callId: second, subCalls: [{ callId: third }] }] },
+    })
+    expect(paged.tools()[0]?.data.siblings).toBeUndefined()
+  })
+
+  it('keeps completed and interrupted children after their uncommitted parent disappears', () => {
+    const third = ToolCallId('read-three')
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'a.txt' } }
+    const events = [
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data }),
+      entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4, data: { ...data, content: [], isError: false } }),
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(5), time: 5, data: { ...data, subCallId: third } }),
+    ]
+    const closed = entry({ type: 'step/end', seq: SessionSeq(6), time: 6, data: { turn: 1, step: 1 } })
+    const h = harness()
+    h.assembler.append(delta(2.1, first, args))
+    for (const event of events) h.assembler.append(event)
+    h.assembler.settleAssistant(attemptId)
+    expect(h.tools()[0]?.data).toMatchObject({ root: { callId: second }, siblings: [{ callId: third, phase: 'start' }] })
+    const live = (h.assembler.snapshot('chat') as ChatSnapshot).legacy
+    expect(live.nodes).toMatchObject([{ kind: 'tool-result', callId: second }])
+    expect(live.runningCalls).toMatchObject([{ callId: third }])
+    h.assembler.append(closed)
+    expect(h.tools()[0]?.data).toMatchObject({
+      root: { kind: 'tool-result', callId: second, parentCallId: first, seq: 4, callTime: 3, isError: false, subCalls: [] },
+      siblings: [{ kind: 'tool-result', callId: third, parentCallId: first, callTime: 5, error: { code: 'interrupted' }, subCalls: [] }],
+    })
+    const history = [...opening, ...events, closed]
+    expect(h.material()).toEqual(harness(history).material())
+    const paged = harness(history.slice(-2), true)
+    paged.assembler.prepend(history.slice(0, -2), false)
+    expect(paged.material()).toEqual(h.material())
+  })
+
+  it('shows early children and retires preparation before the root call without losing process evidence', () => {
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'README.md' } }
+    const started = entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data })
+    const completed = entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4, data: { ...data, content: [], isError: false } })
+    const message = settlement([first])
+    const h = harness(opening, false, toolDefinition, assistantDefinition, true)
+    h.assembler.append(delta(2.1, first, args))
+    const key = h.tools()[0]!.key
+    h.assembler.append(started)
+    expect(h.tools()[0]).toMatchObject({ key, data: { root: {
+      phase: 'preparing', name: 'write', subCalls: [{ phase: 'start', callId: second, name: 'read' }],
+    } } })
+    h.assembler.append(completed)
+    expect(h.tools()[0]!.data.root.subCalls[0]).toMatchObject({ kind: 'tool-result', callId: second })
+    h.assembler.settleAssistant(attemptId, message)
+    h.assembler.append(call(6))
+    h.assembler.append(result(7))
+    expect(h.tools()[0]).toMatchObject({ key, anchorSeq: 6, data: { root: {
+      kind: 'tool-result', name: 'write', call: { name: 'write', argsRaw: args },
+      subCalls: [{ kind: 'tool-result', callId: second, name: 'read' }],
+    } } })
+    const snapshot = h.assembler.snapshot('chat') as ChatSnapshot
+    expect(snapshot.nodes.values().find(node => node.kind === 'turn-process')).toMatchObject({ data: { toolCallCount: 1 } })
+    const history = [...opening, started, completed, message, call(6), result(7)]
+    expect(h.material()).toEqual(harness(history, false, toolDefinition, assistantDefinition, true).material())
+  })
+
+  it.each([0, 2, 4])('retains nested calls when %i dispatch events precede the root call', (beforeRoot) => {
+    const children = [ToolCallId('read-one'), ToolCallId('read-two')]
+    const dispatches = children.flatMap(subCallId => [
+      { type: 'tool/ptc-dispatch-start' as const, data: {
+        rootCallId: first, parentCallId: first, subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+      } },
+      { type: 'tool/ptc-dispatch' as const, data: {
+        rootCallId: first, parentCallId: first, subCallId, name: 'read', arguments: { path: `${subCallId}.txt` },
+        content: [{ type: 'text' as const, text: 'contents' }], isError: false,
+      } },
+    ])
+    const events = [...dispatches.slice(0, beforeRoot), call(0).event, ...dispatches.slice(beforeRoot)]
+      .map((event, index) => entry({ ...event, seq: SessionSeq(index + 3), time: index + 3 }))
+    const closed = entry({ type: 'step/end', seq: SessionSeq(9), time: 9, data: { turn: 1, step: 1 } })
+    const history = [...opening, ...events, result(8), closed]
+    const h = harness()
+    h.assembler.append(delta(2.1, first, args))
+    const key = h.tools()[0]!.key
+    for (const event of events) {
+      h.assembler.append(event)
+      expect(h.tools()[0]!.key).toBe(key)
+    }
+    h.assembler.append(result(8))
+    h.assembler.append(closed)
+    h.assembler.settleAssistant(attemptId)
+    expect(h.tools()).toHaveLength(1)
+    expect(h.tools()[0]).toMatchObject({ key, data: { root: {
+      kind: 'tool-result', name: 'write', call: { name: 'write', argsRaw: args }, isError: false,
+      subCalls: children.map(callId => ({ kind: 'tool-result', callId, parentCallId: first, name: 'read', isError: false })),
+    } } })
+    expect(h.tools()[0]!.data.root.args.text('content')).toBe('hello')
+    expect(h.material()).toEqual(harness(history).material())
+    const paged = harness(history.slice(-2), true)
+    paged.assembler.prepend(history.slice(0, -2), false)
+    expect(paged.material()).toEqual(h.material())
+  })
+
+  it.each([false, true])('keeps the Assistant reply before its tool through preparation retirement (reconnect=%s)', (reconnect) => {
+    const text = 'Let me read those files.'
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'README.md' } }
+    const history = [
+      ...opening,
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data }),
+      entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4, data: { ...data, content: [], isError: false } }),
+      settlement([first], 'write', args, text), call(6), result(7),
+      entry({ type: 'step/end', seq: SessionSeq(8), time: 8, data: { turn: 1, step: 1 } }),
+    ]
+    const h = harness(reconnect ? history.slice(0, 4) : opening)
+    const preparingSeq = reconnect ? 4.2 : 2.2
+    const order = () => {
+      h.assembler.flush()
+      const snapshot = h.assembler.snapshot('chat') as ChatSnapshot
+      return snapshot.nodes.values().filter(node => node.visibility === 'visible')
+        .sort((left, right) => left.anchorSeq - right.anchorSeq).map(node => node.kind)
+    }
+    h.assembler.append({ type: 'transient', event: {
+      type: 'assistant/live-chunk', seq: preparingSeq - 0.1, time: preparingSeq - 0.1,
+      data: { turn: 1, step: 1, attemptId, chunk: { type: 'text-delta', index: 0, text } },
+    } })
+    h.assembler.append(delta(preparingSeq, first, args, 'write', 1))
+    expect(order()).toEqual(['assistant-step', 'tool-call'])
+    for (const event of history.slice(reconnect ? 4 : 2)) h.assembler.append(event)
+    expect(order()).toEqual(['assistant-step', 'tool-call'])
+    expect(h.tools()[0]!.anchorSeq).toBe(preparingSeq)
+    h.assembler.settleAssistant(attemptId)
+    expect(order()).toEqual(['assistant-step', 'tool-call'])
+    expect(h.tools()[0]!.anchorSeq).toBe(6)
+    expect(h.material()).toEqual(harness(history).material())
+  })
+
   it('keeps Assistant state unchanged for parameter-only deltas while the Tool reader advances', () => {
     const update = vi.fn<typeof assistantDefinition.update>((...values) => assistantDefinition.update(...values))
     const h = harness(opening, false, toolDefinition, { ...assistantDefinition, update })

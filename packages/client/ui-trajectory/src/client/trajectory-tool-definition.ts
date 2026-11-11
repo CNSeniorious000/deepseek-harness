@@ -239,21 +239,29 @@ const trajectoryToolDefinition: ConversationNodeDefinition<ToolState> = {
     if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
       const rootCallId: unknown = event.data.rootCallId
       return typeof rootCallId === 'string' && rootCallId !== ''
-        ? { id: rootCallId, role: 'update' }
+        ? { id: rootCallId, role: 'start' }
         : null
     }
     return null
   },
-  start: (_context, match) => {
-    const root = rootCall(match)
-    return {
-      rootId: root.callId,
-      calls: new Map([[root.callId, root]]),
+  start: (context, match) => {
+    const state: ToolState = {
+      rootId: context.id,
+      calls: new Map(),
       children: new Map(),
       parents: new Map(),
     }
+    // Streaming execution can dispatch children before the root call is committed.
+    return match.event.type === 'tool/call'
+      ? { ...state, calls: new Map([[context.id, rootCall(match)]]) }
+      : updateDispatch(state, match)
   },
   update: (context, match) => {
+    if (match.event.type === 'tool/call') {
+      const calls = new Map(context.state.calls)
+      calls.set(context.state.rootId, rootCall(match))
+      return { ...context.state, calls }
+    }
     if (match.event.type !== 'tool/result') return updateDispatch(context.state, match)
     const previous = context.state.calls.get(context.state.rootId)
     const running = previous !== undefined && !('kind' in previous) ? previous : undefined
@@ -266,11 +274,20 @@ const trajectoryToolDefinition: ConversationNodeDefinition<ToolState> = {
   buildViewNode: (context) => {
     const state = context.state ?? fallbackState(context)
     if (state === undefined) return null
-    const root = projectCall(state, state.rootId, interruption(context))
+    const interruptedAt = interruption(context)
+    const roots = [
+      ...state.calls.has(state.rootId) ? [state.rootId] : [],
+      ...[...state.calls.keys()].filter(id => id !== state.rootId && !state.calls.has(state.parents.get(id) ?? '')),
+    ]
+    const trees = roots.flatMap((id) => {
+      const tree = projectCall(state, id, interruptedAt)
+      return tree === undefined ? [] : [tree]
+    })
+    const root = trees[0]
     if (root === undefined) return null
     const anchorSeq = context.start?.event.seq
       ?? ('kind' in root ? root.seq : context.matches[0]?.event.seq ?? 0)
-    return trajectoryNode(context, anchorSeq, { kind: 'tool', root })
+    return trajectoryNode(context, anchorSeq, { kind: 'tool', root, ...trees.length === 1 ? {} : { siblings: trees.slice(1) } })
   },
 }
 /* jscpd:ignore-end */
