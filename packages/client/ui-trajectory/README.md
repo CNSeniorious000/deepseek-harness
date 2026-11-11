@@ -65,7 +65,7 @@ Failed records use non-empty recorded result text for ledger previews, inspector
 
 Tool records begin at durable tool/call events and retain complete argument text with a lazy `args` view, reused by paired results. Chat's transient preparing stage does not create Trajectory tool rows or alter historical tool timing.
 
-Nested PTC calls received before their root's durable `tool/call` remain attached when the root arrives, including during history replay and pagination.
+Nested PTC calls are inspectable before their root's durable `tool/call`. Known children with unavailable parents appear as separate trees in their recorded Turn and Step; a later parent joins them without duplication. Interrupted execution, history replay, and pagination retain those children without inventing a parent call or result.
 
 A complete appended prompt without a loaded request header appears as a standalone system row; only its known text is available, with no inferred request options or tool catalog. Prepending its request history replaces that standalone presentation without duplicating the prompt. In-history system prompt changes compare against the most recent request state, including earlier prompt updates without a new request header. Each request retains the prompt and change that applied at its own position. Surface replacements, including compaction, restore the last nonempty surviving system prompt even without a new system event; an unloaded prompt remains unavailable until its page arrives.
 

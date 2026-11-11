@@ -21,7 +21,7 @@ it('finds an earlier user message by sequence independently of node order', () =
 })
 
 it('prefers tool identity and the owning Assistant over unrelated nearby nodes', () => {
-  const tool = { ...node('tool', 3, 'tool-call'), data: { root: { callId: 'root-call' } } }
+  const tool = { ...node('tool', 3, 'tool-call'), id: 'root-call', data: { root: { callId: 'root-call' } } }
   expect(resolveChatRevealTargets({ anchorSeq: 10, callId: 'child-call', rootCallId: 'root-call', turn: 1, step: 1 }, [tool, node('later', 10)])[0])
     .toMatchObject({ nodeKey: 'tool', callId: 'child-call' })
   const assistant = node('assistant', 20, 'assistant-step')
@@ -100,7 +100,7 @@ it('uses requested coordinates before the explicit node coordinates without reor
 
 it('keeps a root tool primary ahead of exact, kind, and nearer fallback nodes', () => {
   const target = { anchorSeq: 100, turn: 2, step: 3, callId: 'child', rootCallId: 'root', nodeKind: 'assistant-step' }
-  const tool = { ...node('tool', 300, 'tool-call', 9, 1), data: { root: { callId: 'root' } } }
+  const tool = { ...node('tool', 300, 'tool-call', 9, 1), id: 'root', data: { root: { callId: 'root' } } }
   const candidates = resolveChatRevealTargets(target, [
     tool, node('assistant', 120, 'assistant-step', 2, 3), node('exact', 100, 'user', 2, 3),
   ])
@@ -116,6 +116,14 @@ it('keeps an exact primary ahead of an Assistant kind match', () => {
   const target = { anchorSeq: 10, turn: 1, step: 1, nodeKind: 'assistant-step' }
   expect(resolveChatRevealTargets(target, [node('assistant', 9, 'assistant-step'), node('exact', 10)])[0])
     .toEqual({ ...target, nodeKey: 'exact' })
+})
+
+it('reveals a child through its logical root before the parent commits', () => {
+  const target = { anchorSeq: 10, callId: 'second', rootCallId: 'root' }
+  const tool = { ...node('tool', 3, 'tool-call'), id: 'root', data: {
+    root: { callId: 'first', parentCallId: 'root' }, siblings: [{ callId: 'second', parentCallId: 'root' }],
+  } }
+  expect(resolveChatRevealTargets(target, [tool, node('nearby', 10)])[0]).toEqual({ ...target, nodeKey: 'tool', turn: 1 })
 })
 
 it('retries an explicit node without its tool, group, or part selectors', () => {

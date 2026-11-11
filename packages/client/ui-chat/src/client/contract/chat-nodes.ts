@@ -50,9 +50,10 @@ export type FinalAssistantChatData = AssistantChatData & {
   readonly finalNode: AssistantMessageNode
 }
 
-/** Root Tool row payload; the root lifecycle owns all recursive subcalls. */
+/** Tool trees sharing one lifecycle; missing parents leave their known children as siblings. */
 export interface ToolChatData {
   readonly root: ToolCallBlock
+  readonly siblings?: readonly ToolCallBlock[]
 }
 
 /** One manual command and its correlated compaction transaction. */

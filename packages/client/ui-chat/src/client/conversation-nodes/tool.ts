@@ -339,24 +339,29 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
   buildViewNode: (context) => {
     const current = context.current.get('chat') as ChatNode<'tool-call'> | null | undefined
     const state = context.state ?? fallbackState(context)
-    if (state?.root === undefined) {
+    const interruptedAt = interruption(context)
+    const root = state?.root
+    const missingRoot = root === undefined || (!('kind' in root) && root.phase === 'preparing' && interruptedAt !== undefined)
+    const trees = state === undefined ? [] : [
+      ...missingRoot ? [] : [projectBlock(!('kind' in root) && root.phase === 'preparing'
+        ? preparingBlock(root, current?.data.root) : root, state, interruptedAt)],
+      ...[...state.children].flatMap(([parent, children]) => state.parents.has(parent) || (!missingRoot && parent === context.id) ? []
+        : children.map(child => projectBlock(child, state, interruptedAt))),
+    ]
+    const projected = trees[0]
+    if (projected === undefined) {
       return current == null ? null : current.visibility === 'hidden' ? current : { ...current, visibility: 'hidden' }
     }
-    const interruptedAt = interruption(context)
-    const root = !('kind' in state.root) && state.root.phase === 'preparing'
-      ? preparingBlock(state.root, current?.data.root)
-      : state.root
-    const projected = projectBlock(root, state, interruptedAt)
-    const anchor = state.anchorSeq
+    const anchor = (missingRoot ? undefined : state?.anchorSeq)
       ?? context.start?.event.seq
-      ?? ('kind' in state.root ? state.root.seq : context.matches[0]?.event.seq ?? 0)
-    const preparing = !('kind' in projected) && projected.phase === 'preparing'
-    const visibility = preparing && interruptedAt !== undefined ? 'hidden' : 'visible'
+      ?? ('kind' in projected ? projected.seq : context.matches[0]?.event.seq ?? 0)
+    const siblings = trees.slice(1)
     const location = contextLocation(context)
-    const data = current?.data.root === projected ? current.data : { root: projected } satisfies ToolChatData
+    const data = current?.data.root === projected && sameReferences(current.data.siblings ?? [], siblings)
+      ? current.data : { root: projected, ...siblings.length === 0 ? {} : { siblings } } satisfies ToolChatData
     if (current?.data === data && current.anchorSeq === anchor
-      && current.visibility === visibility && current.location === location) return current
-    return chatNode(context, 'tool-call', anchor, data, { visibility, location })
+      && current.visibility === 'visible' && current.location === location) return current
+    return chatNode(context, 'tool-call', anchor, data, { location })
   },
 }
 

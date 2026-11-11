@@ -35,6 +35,7 @@ export type TrajectoryContribution =
   | {
     readonly kind: 'tool'
     readonly root: ToolCallBlock
+    readonly siblings?: readonly ToolCallBlock[]
   }
   | {
     readonly kind: 'request-header'

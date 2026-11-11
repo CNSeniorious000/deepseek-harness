@@ -105,6 +105,57 @@ function harness(
 }
 
 describe('Tool preparation and durable replay', () => {
+  it('retains a child with an unloaded parent and joins later ancestors without duplication', () => {
+    const third = ToolCallId('read-three')
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: {} }
+    const history = [
+      ...opening,
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data }),
+      entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4,
+        data: { ...data, parentCallId: second, subCallId: third, content: [], isError: false } }),
+    ]
+    const paged = harness(history.slice(-1), true)
+    expect(paged.tools()[0]?.data).toMatchObject({ root: { callId: third, parentCallId: second } })
+    paged.assembler.prepend(history.slice(0, -1), false)
+    expect(paged.material()).toEqual(harness(history).material())
+    expect(paged.tools()[0]?.data).toMatchObject({ root: { callId: second, subCalls: [{ callId: third }] } })
+    paged.assembler.append(call(5))
+    expect(paged.tools()).toHaveLength(1)
+    expect(paged.tools()[0]?.data).toMatchObject({
+      root: { callId: first, subCalls: [{ callId: second, subCalls: [{ callId: third }] }] },
+    })
+    expect(paged.tools()[0]?.data.siblings).toBeUndefined()
+  })
+
+  it('keeps completed and interrupted children after their uncommitted parent disappears', () => {
+    const third = ToolCallId('read-three')
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'a.txt' } }
+    const events = [
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data }),
+      entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4, data: { ...data, content: [], isError: false } }),
+      entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(5), time: 5, data: { ...data, subCallId: third } }),
+    ]
+    const closed = entry({ type: 'step/end', seq: SessionSeq(6), time: 6, data: { turn: 1, step: 1 } })
+    const h = harness()
+    h.assembler.append(delta(2.1, first, args))
+    for (const event of events) h.assembler.append(event)
+    h.assembler.settleAssistant(attemptId)
+    expect(h.tools()[0]?.data).toMatchObject({ root: { callId: second }, siblings: [{ callId: third, phase: 'start' }] })
+    const live = (h.assembler.snapshot('chat') as ChatSnapshot).legacy
+    expect(live.nodes).toMatchObject([{ kind: 'tool-result', callId: second }])
+    expect(live.runningCalls).toMatchObject([{ callId: third }])
+    h.assembler.append(closed)
+    expect(h.tools()[0]?.data).toMatchObject({
+      root: { kind: 'tool-result', callId: second, parentCallId: first, seq: 4, callTime: 3, isError: false, subCalls: [] },
+      siblings: [{ kind: 'tool-result', callId: third, parentCallId: first, callTime: 5, error: { code: 'interrupted' }, subCalls: [] }],
+    })
+    const history = [...opening, ...events, closed]
+    expect(h.material()).toEqual(harness(history).material())
+    const paged = harness(history.slice(-2), true)
+    paged.assembler.prepend(history.slice(0, -2), false)
+    expect(paged.material()).toEqual(h.material())
+  })
+
   it('shows early children and retires preparation before the root call without losing process evidence', () => {
     const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'README.md' } }
     const started = entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data })

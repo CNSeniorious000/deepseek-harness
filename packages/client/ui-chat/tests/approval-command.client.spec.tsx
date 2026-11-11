@@ -41,7 +41,6 @@ describe('ApprovalCommand', () => {
   it('omits absent, uncorrelated, preparing, and settled Tool calls', () => {
     const { container, rerender } = render(<ApprovalCommand {...props([
       { kind: 'assistant-step', data: {} },
-      { kind: 'tool-call', data: { root: undefined } },
       { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'other', argsRaw: '{}' } } },
       { kind: 'tool-call', data: { root: { phase: 'preparing', args: PartialArguments.EMPTY, callId: 'call-1', name: 'bash' } } },
       {
@@ -55,5 +54,13 @@ describe('ApprovalCommand', () => {
       { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'call-1', argsRaw: '{}' } } },
     ] as never)} />)
     expect(container.textContent).toBe('')
+  })
+
+  it('resolves a sibling command while its parent is unavailable', () => {
+    render(<ApprovalCommand {...props([{ kind: 'tool-call', data: {
+      root: { kind: 'tool-result', callId: 'first' },
+      siblings: [{ phase: 'start', callId: 'call-1', argsRaw: '{"command":"pwd"}' }],
+    } }])} />)
+    expect(screen.getByText('pwd')).toBeTruthy()
   })
 })

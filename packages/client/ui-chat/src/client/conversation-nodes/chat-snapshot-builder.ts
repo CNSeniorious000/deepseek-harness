@@ -5,7 +5,7 @@ import type {
   ConversationViewDefinition, ConversationGroupInput, GroupNodePosition, NodeChange, NodeKey, PartialAssistant, RunningToolCall,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatConversationViewNode, ChatNode, ChatNodeDataMap, ChatNodeKind } from '../contract/chat-nodes.ts'
-import { isRunningTool } from '../contract/chat-nodes.ts'
+import { isRunningTool, isSettledTool } from '../contract/chat-nodes.ts'
 import { isVisibleChatNode } from '../contract/chat-visibility.ts'
 import type {
   ChatLocationNodeIndex, ChatNodeProcessSource, ChatNodeSource, ChatNodeStore, ChatSnapshot,
@@ -839,7 +839,7 @@ interface LegacyContribution {
   readonly anchorSeq: number
   readonly nodes: readonly ConversationNode[]
   readonly partial: PartialAssistant | null
-  readonly running: RunningToolCall | null
+  readonly running: readonly RunningToolCall[] | null
 }
 
 const EMPTY_CONTRIBUTION: LegacyContribution = {
@@ -884,10 +884,12 @@ function legacyContribution(raw: ChatConversationViewNode): LegacyContribution {
       }
     }
     case 'tool-call': {
-      const root = node.data.root
-      return isRunningTool(root)
-        ? { anchorSeq: node.anchorSeq, nodes: EMPTY_LIST, partial: null, running: root }
-        : { anchorSeq: node.anchorSeq, nodes: [root], partial: null, running: null }
+      const roots = [node.data.root, ...node.data.siblings ?? []]
+      const running = roots.filter(isRunningTool)
+      return {
+        anchorSeq: node.anchorSeq, nodes: roots.filter(isSettledTool), partial: null,
+        running: running.length === 0 ? null : running,
+      }
     }
     case 'manual-compaction': {
       const data = node.data
@@ -920,7 +922,7 @@ function sameContribution(left: LegacyContribution | undefined, right: LegacyCon
     && left.partial?.blocks === right.partial?.blocks
     && left.partial?.turn === right.partial?.turn
     && left.partial?.step === right.partial?.step
-    && left.running === right.running
+    && sameReferences(left.running ?? EMPTY_LIST, right.running ?? EMPTY_LIST)
     && sameReferences(left.nodes, right.nodes)
 }
 
@@ -997,7 +999,7 @@ class LegacySliceBuilder {
   private rebuildRunning(): void {
     const runningCalls = [...this.runningContributions.values()]
       .sort((left, right) => left.anchorSeq - right.anchorSeq)
-      .flatMap(value => value.running === null ? [] : [value.running])
+      .flatMap(value => value.running ?? EMPTY_LIST)
     if (!sameReferences(this.runningCalls, runningCalls)) this.runningCalls = runningCalls
   }
 
@@ -1062,9 +1064,10 @@ function runningContributionChanged(
   previous: LegacyContribution | undefined,
   next: LegacyContribution,
 ): boolean {
-  return previous?.running !== next.running
-    || ((previous.running !== null || next.running !== null)
-      && previous.anchorSeq !== next.anchorSeq)
+  const previousRunning = previous?.running ?? EMPTY_LIST
+  return !sameReferences(previousRunning, next.running ?? EMPTY_LIST)
+    || ((previousRunning.length > 0 || next.running !== null)
+      && previous?.anchorSeq !== next.anchorSeq)
 }
 
 function partialContributionChanged(

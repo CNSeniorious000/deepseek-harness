@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import { useState, type ComponentProps, type ReactNode } from 'react'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { SlotTestRuntime } from '@deepseek-ai/dsh-client-test-runtime'
@@ -1579,6 +1580,18 @@ describe('TrajectoryTable', () => {
     expect(screen.getByRole('row', { name: /SUBTOOL.*read/ }).getAttribute('aria-selected'))
       .toBe('true')
     expect(screen.queryByRole('row', { name: /Collapsed/ })).toBeNull()
+  })
+
+  it('inspects a running child before its parent call is available', () => {
+    const turns = deriveTrajectoryLayout({ nodes: [], partial: null, runningCalls: [{
+      phase: 'start', callId: 'early-child', parentCallId: 'uncommitted-parent', name: 'read', argsRaw: '{"path":"a.txt"}',
+      args: PartialArguments.fromObject({ path: 'a.txt' }), turn: 2, step: 3, time: 1_000, subCalls: [],
+    }] }, t)
+    const onInspectApplied = vi.fn()
+    render(<TrajectoryTable turns={turns} {...FOLD_PROPS} inspectCallId="early-child" onInspectApplied={onInspectApplied} />)
+    expect(screen.getByRole('row', { name: /TOOL.*read/ }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('complementary', { name: 'Event details' })).toBeTruthy()
+    expect(onInspectApplied).toHaveBeenCalledOnce()
   })
 
   it('an inspect target opens the matching record and acknowledges once', () => {
