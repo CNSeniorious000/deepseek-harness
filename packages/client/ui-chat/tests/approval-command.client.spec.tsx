@@ -31,8 +31,8 @@ describe('ApprovalCommand', () => {
   it('renders the running correlated Tool command', () => {
     render(<ApprovalCommand {...props([
       { kind: 'assistant-step', data: {} },
-      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{"command":"wrong"}'), callId: 'other', argsRaw: '{"command":"wrong"}' } } },
-      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{"command":"pnpm test"}'), callId: 'call-1', argsRaw: '{"command":"pnpm test"}' } } },
+      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{"command":"wrong"}'), callId: 'other', argsRaw: '{"command":"wrong"}', subCalls: [] } } },
+      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{"command":"pnpm test"}'), callId: 'call-1', argsRaw: '{"command":"pnpm test"}', subCalls: [] } } },
     ] as never)} />)
 
     expect(screen.getByText('pnpm test')).toBeTruthy()
@@ -41,26 +41,37 @@ describe('ApprovalCommand', () => {
   it('omits absent, uncorrelated, preparing, and settled Tool calls', () => {
     const { container, rerender } = render(<ApprovalCommand {...props([
       { kind: 'assistant-step', data: {} },
-      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'other', argsRaw: '{}' } } },
-      { kind: 'tool-call', data: { root: { phase: 'preparing', args: PartialArguments.EMPTY, callId: 'call-1', name: 'bash' } } },
+      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'other', argsRaw: '{}', subCalls: [] } } },
+      { kind: 'tool-call', data: { root: { phase: 'preparing', args: PartialArguments.EMPTY, callId: 'call-1', name: 'bash', subCalls: [] } } },
       {
         kind: 'tool-call',
-        data: { root: { kind: 'tool-result', callId: 'call-1', argsRaw: '{"command":"ignored"}' } },
+        data: { root: { kind: 'tool-result', callId: 'call-1', argsRaw: '{"command":"ignored"}', subCalls: [] } },
       },
     ] as never)} />)
     expect(container.textContent).toBe('')
 
     rerender(<ApprovalCommand {...props([
-      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'call-1', argsRaw: '{}' } } },
+      { kind: 'tool-call', data: { root: { phase: 'start', args: PartialArguments.fromText('{}'), callId: 'call-1', argsRaw: '{}', subCalls: [] } } },
     ] as never)} />)
     expect(container.textContent).toBe('')
   })
 
-  it('resolves a sibling command while its parent is unavailable', () => {
-    render(<ApprovalCommand {...props([{ kind: 'tool-call', data: {
-      root: { kind: 'tool-result', callId: 'first' },
-      siblings: [{ phase: 'start', callId: 'call-1', argsRaw: '{"command":"pwd"}' }],
+  it('retains a pending child command as its ancestors arrive, then hides its settled result', () => {
+    const child = { phase: 'start', callId: 'call-1', argsRaw: '{"command":"pwd"}', subCalls: [] }
+    const { container, rerender } = render(<ApprovalCommand {...props([{ kind: 'tool-call', data: {
+      root: { kind: 'tool-result', callId: 'first', subCalls: [] },
+      siblings: [child],
     } }])} />)
     expect(screen.getByText('pwd')).toBeTruthy()
+    const parent = { phase: 'preparing', callId: 'parent', subCalls: [child] }
+    rerender(<ApprovalCommand {...props([{ kind: 'tool-call', data: { root: parent } }])} />)
+    expect(screen.getByText('pwd')).toBeTruthy()
+    const root = { phase: 'start', callId: 'root', argsRaw: '{}', subCalls: [parent] }
+    rerender(<ApprovalCommand {...props([{ kind: 'tool-call', data: { root } }])} />)
+    expect(screen.getByText('pwd')).toBeTruthy()
+    rerender(<ApprovalCommand {...props([{ kind: 'tool-call', data: {
+      root: { ...root, subCalls: [{ ...parent, subCalls: [{ ...child, kind: 'tool-result' }] }] },
+    } }])} />)
+    expect(container.textContent).toBe('')
   })
 })
