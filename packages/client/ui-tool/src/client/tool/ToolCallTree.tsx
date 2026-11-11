@@ -81,7 +81,7 @@ const ToolCallBranch = memo(function ToolCallBranch({
       useDisclosure={useDisclosure}
       loadImage={loadImage}
     >
-      {call.phase !== 'preparing' && call.block.subCalls.length > 0 ? (
+      {call.block.subCalls.length > 0 ? (
         <div className={css.subCalls} data-subcalls>
           {call.block.subCalls.map(child => (
             <ToolCallBranch

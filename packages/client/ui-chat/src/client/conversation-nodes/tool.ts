@@ -233,7 +233,6 @@ function projectBlock(
   visited = new Set<string>(),
   depth = 1,
 ): ToolCallBlock {
-  if (!('kind' in block) && block.phase === 'preparing') return block
   if (visited.has(block.callId) || depth > MAX_DEPTH) return { ...block, subCalls: [] }
   const nextVisited = new Set(visited)
   nextVisited.add(block.callId)
@@ -248,7 +247,8 @@ function projectBlock(
     && sameReferences(cached.children, children)) {
     return cached.value
   }
-  const projected: ToolCallBlock = 'kind' in block || interruptedAt === undefined
+  // A child may execute during preparation without a committed root call to mark interrupted.
+  const projected: ToolCallBlock = 'kind' in block || interruptedAt === undefined || block.phase === 'preparing'
     ? sameReferences(block.subCalls, children) ? block : { ...block, subCalls: children }
     : {
       kind: 'tool-result',

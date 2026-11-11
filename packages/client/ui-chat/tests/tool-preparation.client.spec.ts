@@ -10,6 +10,8 @@ import { assistantDefinition } from '../src/client/conversation-nodes/assistant.
 import { toolDefinition } from '../src/client/conversation-nodes/tool.ts'
 import { chatViewDefinition } from '../src/client/conversation-nodes/chat-snapshot-builder.ts'
 import { processGroupDefinition } from '../src/client/conversation-nodes/process-groups.ts'
+import { processEvidenceDefinition, turnProcessDefinition } from '../src/client/conversation-nodes/turn-process.ts'
+import { turnTailDefinition } from '../src/client/conversation-nodes/turn-tail.ts'
 
 const attemptId = LlmAttemptId('preparing-test')
 const first = ToolCallId('write-one')
@@ -81,9 +83,11 @@ function harness(
   hasMore = false,
   tool = toolDefinition,
   assistant = assistantDefinition,
+  process = false,
 ) {
+  const processDefinitions = process ? [processEvidenceDefinition, turnProcessDefinition, turnTailDefinition] : []
   const assembler = new ConversationNodeAssembler(
-    { entries: () => [assistant, tool], fallbackEntry: () => undefined },
+    { entries: () => [assistant, tool, ...processDefinitions], fallbackEntry: () => undefined },
     { entries: () => [chatViewDefinition] },
     { entries: () => [processGroupDefinition], forTarget: target => target === 'chat' ? processGroupDefinition : undefined },
   )
@@ -101,6 +105,33 @@ function harness(
 }
 
 describe('Tool preparation and durable replay', () => {
+  it('shows early children and retires preparation before the root call without losing process evidence', () => {
+    const data = { rootCallId: first, parentCallId: first, subCallId: second, name: 'read', arguments: { path: 'README.md' } }
+    const started = entry({ type: 'tool/ptc-dispatch-start', seq: SessionSeq(3), time: 3, data })
+    const completed = entry({ type: 'tool/ptc-dispatch', seq: SessionSeq(4), time: 4, data: { ...data, content: [], isError: false } })
+    const message = settlement([first])
+    const h = harness(opening, false, toolDefinition, assistantDefinition, true)
+    h.assembler.append(delta(2.1, first, args))
+    const key = h.tools()[0]!.key
+    h.assembler.append(started)
+    expect(h.tools()[0]).toMatchObject({ key, data: { root: {
+      phase: 'preparing', name: 'write', subCalls: [{ phase: 'start', callId: second, name: 'read' }],
+    } } })
+    h.assembler.append(completed)
+    expect(h.tools()[0]!.data.root.subCalls[0]).toMatchObject({ kind: 'tool-result', callId: second })
+    h.assembler.settleAssistant(attemptId, message)
+    h.assembler.append(call(6))
+    h.assembler.append(result(7))
+    expect(h.tools()[0]).toMatchObject({ key, anchorSeq: 6, data: { root: {
+      kind: 'tool-result', name: 'write', call: { name: 'write', argsRaw: args },
+      subCalls: [{ kind: 'tool-result', callId: second, name: 'read' }],
+    } } })
+    const snapshot = h.assembler.snapshot('chat') as ChatSnapshot
+    expect(snapshot.nodes.values().find(node => node.kind === 'turn-process')).toMatchObject({ data: { toolCallCount: 1 } })
+    const history = [...opening, started, completed, message, call(6), result(7)]
+    expect(h.material()).toEqual(harness(history, false, toolDefinition, assistantDefinition, true).material())
+  })
+
   it.each([0, 2, 4])('retains nested calls when %i dispatch events precede the root call', (beforeRoot) => {
     const children = [ToolCallId('read-one'), ToolCallId('read-two')]
     const dispatches = children.flatMap(subCallId => [

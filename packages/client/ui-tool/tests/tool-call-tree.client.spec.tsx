@@ -107,6 +107,24 @@ describe('ToolCallTree', () => {
     expect(view.queryByRole('button')).toBeNull()
   })
 
+  it('retains nested tool rows while the parent arguments are preparing', () => {
+    const owners: ToolCallOwnerProps[] = []
+    const block: ToolCallBlock = {
+      phase: 'preparing', args: PartialArguments.EMPTY, callId: 'parent', name: 'python', turn: 1, step: 1, time: 1,
+      subCalls: [root('child', { name: 'read', argsRaw: '{"file_path":"child.ts"}' })],
+    }
+    const input = props(block, undefined, owners)
+    const view = render(<ToolCallTree {...input} />)
+    const child = view.container.querySelector('[data-chat-call-id="child"]')
+    expect(child).not.toBeNull()
+    expect(child?.parentElement?.parentElement).toBe(view.container.querySelector('[data-chat-call-id="parent"]'))
+    expect(owners.map(owner => [owner.callId, owner.phase])).toEqual([['parent', 'preparing'], ['child', 'result']])
+    owners[1]?.inspect?.()
+    expect(input.inspectCall).toHaveBeenCalledExactlyOnceWith('child')
+    view.rerender(<ToolCallTree {...input} node={{ ...input.node, data: { root: { ...block, phase: 'start', argsRaw: '{}' } } }} />)
+    expect(view.container.querySelector('[data-chat-call-id="child"]')).toBe(child)
+  })
+
   it('forwards one stable disclosure Hook to nested calls and resets only their open state', () => {
     const reset = createSnapshotStore(0)
     const useDisclosure = bindDisclosure(reset)
