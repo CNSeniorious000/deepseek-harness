@@ -1582,14 +1582,25 @@ describe('TrajectoryTable', () => {
     expect(screen.queryByRole('row', { name: /Collapsed/ })).toBeNull()
   })
 
-  it('inspects a running child before its parent call is available', () => {
-    const turns = deriveTrajectoryLayout({ nodes: [], partial: null, runningCalls: [{
-      phase: 'start', callId: 'early-child', parentCallId: 'uncommitted-parent', name: 'read', argsRaw: '{"path":"a.txt"}',
+  it('keeps inspecting a running child when its parent call arrives after acknowledgement', () => {
+    const child = {
+      phase: 'start' as const, callId: 'early-child', parentCallId: 'uncommitted-parent', name: 'read', argsRaw: '{"path":"a.txt"}',
       args: PartialArguments.fromObject({ path: 'a.txt' }), turn: 2, step: 3, time: 1_000, subCalls: [],
-    }] }, t)
+    }
+    const turns = deriveTrajectoryLayout({ nodes: [], partial: null, runningCalls: [child] }, t)
     const onInspectApplied = vi.fn()
-    render(<TrajectoryTable turns={turns} {...FOLD_PROPS} inspectCallId="early-child" onInspectApplied={onInspectApplied} />)
+    const { rerender } = render(
+      <TrajectoryTable turns={turns} {...FOLD_PROPS} inspectCallId="early-child" onInspectApplied={onInspectApplied} />,
+    )
     expect(screen.getByRole('row', { name: /TOOL.*read/ }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('complementary', { name: 'Event details' })).toBeTruthy()
+    expect(onInspectApplied).toHaveBeenCalledOnce()
+    const nested = deriveTrajectoryLayout({ nodes: [], partial: null, runningCalls: [{
+      phase: 'start', callId: 'uncommitted-parent', name: 'python', argsRaw: '{}', args: PartialArguments.fromText('{}'),
+      turn: 2, step: 3, time: 1_001, subCalls: [child],
+    }] }, t)
+    rerender(<TrajectoryTable turns={nested} {...FOLD_PROPS} inspectCallId={null} onInspectApplied={onInspectApplied} />)
+    expect(screen.getByRole('row', { name: /SUBTOOL.*read/ }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByRole('complementary', { name: 'Event details' })).toBeTruthy()
     expect(onInspectApplied).toHaveBeenCalledOnce()
   })

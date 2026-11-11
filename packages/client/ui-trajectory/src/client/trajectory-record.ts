@@ -107,13 +107,13 @@ export interface TrajectoryCellProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * Resolve the identity that survives prepending older projected records.
+ * Resolve the identity that survives history prepends and tool reparenting.
  * @param cell - Projected trajectory record.
  * @returns Stable identity from the owning event or tool call, with a fixture fallback.
  */
 export function trajectoryRecordId(cell: TrajectoryCellProps): string {
   if (cell.recordId !== undefined) return cell.recordId
-  if (cell.callId !== undefined) return `${cell.kind}\u0000call\u0000${cell.callId}`
+  if (cell.callId !== undefined) return `${cell.kind === 'subtool' ? 'tool' : cell.kind}\u0000call\u0000${cell.callId}`
   if (cell.sourceSeq !== undefined) return `${cell.kind}\u0000seq\u0000${cell.sourceSeq}`
   return `${cell.kind}\u0000index\u0000${cell.index}`
 }

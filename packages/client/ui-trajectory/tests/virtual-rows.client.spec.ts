@@ -78,6 +78,13 @@ describe('trajectory virtual rows', () => {
       .toBe(groupTrajectoryVirtualRows([content])[0]?.key)
   })
 
+  it('keeps a tool row key when a later parent makes it a subcall', () => {
+    const tool = record(1, { kind: 'tool', callId: 'early-child' })
+    const subtool = record(3, { kind: 'subtool', callId: 'early-child' })
+    expect(trajectoryVirtualRecordKey(subtool)).toBe(trajectoryVirtualRecordKey(tool))
+    expect(trajectoryVirtualRecordKey(tool)).toBe('tool%00call%00early-child')
+  })
+
   it.each(['turn', 'assistant', 'tool'] as const)('distinguishes a %s summary from its source record', (kind) => {
     const source = record(1, { sourceSeq: 10 })
     const summary = record(1, { sourceSeq: 10 }, kind)
